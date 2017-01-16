@@ -3,170 +3,217 @@ import socket
 import select
 import base64
 import getpass
-import configparser
 
-#Ref:
-#https://tools.ietf.org/rfc/rfc7230.txt
+
+#Ref: https://tools.ietf.org/rfc/rfc7230.txt
+
 
 class ProxyHandler(socketserver.BaseRequestHandler):
-    timeout_relay = 3600 #Time for neither party to send any data to timeout the connection
-    timeout_socket = 5 # Used by create_connection() as time for new connection to timeout
-    #N.B. recv() also use timeout_socket, but it is protected by select()
-    #N.B. Besides timeout_socket, a ?system-wide connection timeout is additionally in place
-
-    
-    parentProxyAdr = ("127.0.0.1","8888")
-    authString = ''.encode()
-
-    @classmethod
-    def setuser(cls,user):
-        if user != '':
-            cls.authString = ('Proxy-Authorization: Basic %s\r\n' % base64.b64encode((user+":"+getpass.getpass()).encode()).decode('ascii')).encode()
-
-    @classmethod
-    def setproxy(cls,addr,port):
-        cls.parentProxyAdr = (addr,port)
+    timeout = 5
+    parentProxyAdr = ("__PROXY_URL_HERE__","8080")
+    authString = ('Proxy-Authorization: Basic %s\r\n' % base64.b64encode(("__USER_NAME_NERE__:"+getpass.getpass()).encode()).decode('ascii')).encode()
     
     def handle(self):
         L = self.request
-        R = socket.create_connection(self.parentProxyAdr, timeout=self.timeout_socket)
+        R = socket.create_connection(self.parentProxyAdr, timeout=self.timeout)
 
-        sockets = [L,R]
-        last = None
-        intercept = True
+        source = L
+        dest = R
+
         try:
-            while True:
-                rlist, wlist, xlist = select.select(sockets, [], sockets, self.timeout_relay)
-                if rlist:
-                    for source in rlist:
-                        data = source.recv(8192)
-                        if not data: #Connection closed
-                            return
-
-                        dest = L if source is R else R
-                        if intercept:
-                            if source != last:
-                                last = source
-                                if source is L: #If this is the first packet from Local
-                                    firstCRCL = data.find(b"\n",2);
-                                    if firstCRCL == -1:
-                                        print('Error 414: ' + repr(data))
-                                        #TODO Response 414 URI Too Long
-                                        return
-                                    
-                                    try:
-                                        cmd = data[:firstCRCL].decode().strip()
-                                        #print(repr(cmd))
-                                        cmd, target, version = cmd.split(" ")
-                                    except (ValueError, UnicodeDecodeError) as e:
-                                        print('Error 400: ' + repr(data))
-                                        #TODO Response 400 Bad Request
-                                        return
-                                    if cmd == "CONNECT":
-                                        intercept = False
-                                
-                                    dest.sendall(data[:firstCRCL+1])
-                                    dest.sendall(self.authString)
-                                    dest.sendall(data[firstCRCL+1:])
-
-                                    if target == "/open.pac":
-                                        if cmd == "GET":
-                                            with open('pac.txt', 'rb') as f:
-                                                source.sendall(b"HTTP/1.1 200 OK\r\n\r\n") #TODO Connection-close header
-                                                data = True
-                                                while data:
-                                                    data = f.read(8192)
-                                                    source.sendall(data)
-                                            return
-                                        raise Exception("Should NOT happen")
-                                    
-                                    continue
-                        
-                        dest.sendall(data) #Relay as-is if not intercepted
-                elif xlist:
-                    print(len(rlist)) #Theoretically can happen but i have never seen
-                    print(len(wlist))
-                    print(len(xlist))
-                    print(xlist[0].recv(8192))
-                    return
-                else not rlist:
-                    print('408 Timeout: %s %s' % (cmd, target)) #Relay timeout
-                    #TODO Response 408
-                    return
-                
+            data = source.recv(8192)
         except ConnectionResetError as e:
-            raise
-        except (socket.timeout,TimeoutError): #timeout from recv; socket.timeout -> exceeded timeout_socket, TimeoutError -> exceeded ?system-wide timeout
-            raise Exception("Should NOT happen") #Should be protected by 'select' function
-        except Exception as e:
-            raise
-        finally:
-            L.close()
-            R.close()
+            if source == L:
+                #TODO Consider Response 408 Request Timeout
+                #Header: close
+                pass
+            else:
+                #Drop
+                pass
+            return
 
-            #TODO Consider Response 408 Request Timeout with header: close
+        
+        firstCRCL = data.find(b"\n",2);
+        if firstCRCL == -1:
+            if source == L:
+                #TODO Response 414 URI Too Long
+                pass
+            else:
+                #Drop
+                pass
 
-def main():
+        
+        cmd = data[:firstCRCL].decode().strip()
+        try:
+            if source == L:
+                cmd, target, version = cmd.split(" ")
+            else:
+                version, status, phrase = cmd.split(" ",2)
+        except ValueError as e:
+            if souce == L:
+                #TODO Response 400 Bad Request
+            else:
+                #Drop
+            return
+        #TODO Enforce HTTP/1.1?
+        
+        lastCRCL = data.find(b"\r\n\r\n", firstCRCL)
+        if lastCRCL == -1:
+            if source == L:
+                #TODO Response 400 Bad Request
+                return
+            else:
+                #Drop
+                pass
+
+        def getHeader(name):
+            len_offset = data.find(b"\r\n%s:" % name, firstCRCL, lastCRCL)
+            if len_offset == -1:
+                return None
+            len_end = data.find(b"\r\n", len_offset+2, lastCRCL+2)
+            return data[len_offset+len(name)+3:len_end].decode().strip()
+
+
+        transfer_encoding = getHeader(b"Transfer-Encoding")
+        if transfer_encoding:
+            transfer_encoding.split(",").pop().strip()
+        else:
+            content_length = getHeader(b"Content-Length")
+            if content_length:
+                content_length = int(content_length)
+                #if not parsable:
+                    #can try recover comma seperated same value
+                    #if source == L:
+                        #Response 400 Bad Request
+                        #Drop
+                    #else
+                        #Response 502 Bad Gateway to client
+                        #Drop
+            
+        
+        b"Content-Range"
+        b"Trailer"
+
+        if source == L:
+            #if transfer_encoding
+                #if transfer_encoding == "chunked"
+                    #sendByChunk
+                #else
+                    #Response 400 Bad Request
+                    #Drop
+            #elif content_length
+                #sendByLength
+            #else
+                #sendNoBody
                 
-    _CONFIG_FILENAME = 'authproxy.ini'
-    config = configparser.ConfigParser()
-    config.read(_CONFIG_FILENAME)
-    try:
-        if config['DEFAULT']['address'] == '' or config['DEFAULT']['port'] == '' or config['DEFAULT']['user'] == '':
-            raise KeyError
-    except KeyError:
-        config['DEFAULT']['address'] = ''
-        config['DEFAULT']['port'] = ''
-        config['DEFAULT']['user'] = ''
-        with open(_CONFIG_FILENAME, 'w') as f:
-            config.write(f)
-        print('No valid setting from authproxy.ini. Terminating.')
-        return
-    
-    ProxyHandler.setproxy(config['DEFAULT']['address'], config['DEFAULT']['port'])
-    ProxyHandler.setuser(config['DEFAULT']['user'])
+            
+            pass
+        else:
+            #if HEAD
+                #sendNoBody
+            #elif [204,304].count(int(status))!=0
+                #sendNoBody
+            ##???if status[0] == 1:???
+                ##sendNoBody
+            #elif CONNECT && status[0] == 2
+                #tunnel
+            #elif transfer_encoding
+                #if transfer_encoding == "chunked"
+                    #sendByChunk
+                #else
+                    #sendAll
+            #elif content_length
+                #sendByLength        
+            #else
+                #sendAll
+            pass
 
-    #server = socketserver.TCPServer(("localhost",8080), ProxyHandler)
-    server = socketserver.ThreadingTCPServer(("localhost",8080), ProxyHandler)
-    server.serve_forever()
+        def sendHeader():
+            dest.sendall(data[:firstCRCL+1])
+            dest.sendall(self.authString)
+            dest.sendall(data[firstCRCL+1:lastCRCL+4])
+            return data[lastCRCL+4:]
+
+        #discard extra data after content length
+        
+        def tunnel():
+            dest.sendall(sendHeader())
+            
+            sockets = [L,R]
+            while True:
+                rlist, wlist, xlist = select.select(sockets, [], sockets, self.timeout)
+                if xlist or not rlist:
+                    #Drop
+                for source in rlist:
+                    dest = L if source is R else R
+                    data = source.recv(8192)
+                    if not data:
+                        #Drop               
+                    dest.sendall(data)
+                    #try:
+                    #    print(data.decode("utf-8", "ignore"))
+                    #except Exception as e:
+                    #    pass
+
+        def sendAll():
+            tunnel()
+            pass
+
+        def sendByLength(length):
+            data = sendHeader()
+            while True:
+                dest.sendall(data[:length])
+                length -= len(data)
+                if length <= 0:
+                    break
+                data = source.recv(8192)
+                
+        
+        def sendNoBody():
+            if len(data) - lastCRCL - 4 > 0:
+                ##Response 411 Length Required
+                ##Drop
+                pass
+            sendHeader()
+
+        def sendByChunk():
+            data = sendHeader()
+            while True:
+                while True:
+                    firstCRCL = data.find(b"\r\n");
+                    if firstCRCL != -1:
+                        break
+                    data += source.recv(8192)
+                chunk_size = int(data[:firstCRCL].split(";"), 16)
+                length = firstCRCL+2+chunk_size+2
+
+                while True:
+                    dest.sendall(data[:length])
+                    data = data[length:]
+                    length -= len(data)
+                    if length <= 0:
+                        break
+                    data += source.recv(8192)
+                    
+                if chunk_size == 0
+                    break;
+
+            while True:
+                lastCRCL = data.find(b"\r\n\r\n")
+                if lastCRCL != -1:
+                     break
+                data += source.recv(8192)
+            dest.sendall(data[:lastCRCL+4])
+            
+                
+            
+            
+                
+            
+            
+        
+        
+server = socketserver.TCPServer(("localhost",8080), ProxyHandler)
+server.serve_forever()
                                 
 
-if __name__ == '__main__':
-    main()
-
-
-#Experiments
-
-##def test():
-##    from threading import Thread
-##    import time
-##
-##    addr = ("localhost",8888)
-##
-##    def serve_one():
-##        with socket.socket() as listener:
-##            listener.bind(addr)
-##            listener.listen(1)
-##            with listener.accept()[0] as R:
-##                print(len(R.recv(8192)))
-##                time.sleep(10)
-##                pass
-##    
-##    thread = Thread(target = serve_one)
-##    thread.start()
-##    try:
-##        with socket.create_connection(('127.0.0.1', 8888), timeout=1) as L:
-##            rlist, wlist, xlist = select.select([L], [], [L], 30)
-##            print(rlist, wlist, xlist)
-##            print(len(L.recv(8192)))
-##            #time.sleep(30)
-##            #L.sendall(b'Hellow World!')
-##    except TimeoutError:
-##        print('system timeout')
-##        raise
-##    except socket.timeout:
-##        print('socket timeout')
-##        raise
-##    #thread.join()   
-##    
-##test()
