@@ -14,7 +14,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
     #N.B. recv() also use timeout_socket, but it is protected by select()
     #N.B. Besides timeout_socket, a ?system-wide connection timeout is additionally in place
 
-    
+
     parentProxyAdr = ("127.0.0.1","8888")
     authString = ''.encode()
 
@@ -26,11 +26,15 @@ class ProxyHandler(socketserver.BaseRequestHandler):
     @classmethod
     def setproxy(cls,addr,port):
         cls.parentProxyAdr = (addr,port)
-    
+
     def handle(self):
         L = self.request
-        R = socket.create_connection(self.parentProxyAdr, timeout=self.timeout_socket)
-
+        try:
+            R = socket.create_connection(self.parentProxyAdr, timeout=self.timeout_socket)
+        except socket.timeout:
+            print('Cannot connect to parent proxy')
+            return
+        
         sockets = [L,R]
         last = None
         intercept = True
@@ -53,7 +57,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                                         print('Error 414: ' + repr(data))
                                         #TODO Response 414 URI Too Long
                                         return
-                                    
+
                                     try:
                                         cmd = data[:firstCRCL].decode().strip()
                                         #print(repr(cmd))
@@ -64,7 +68,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                                         return
                                     if cmd == "CONNECT":
                                         intercept = False
-                                
+
                                     dest.sendall(data[:firstCRCL+1])
                                     dest.sendall(self.authString)
                                     dest.sendall(data[firstCRCL+1:])
@@ -79,9 +83,9 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                                                     source.sendall(data)
                                             return
                                         raise Exception("Should NOT happen")
-                                    
+
                                     continue
-                        
+
                         dest.sendall(data) #Relay as-is if not intercepted
                 elif xlist:
                     print(len(rlist)) #Theoretically can happen but i have never seen
@@ -89,13 +93,13 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                     print(len(xlist))
                     print(xlist[0].recv(8192))
                     return
-                else not rlist:
+                else:
                     print('408 Timeout: %s %s' % (cmd, target)) #Relay timeout
                     #TODO Response 408
                     return
-                
-        except ConnectionResetError as e:
-            raise
+
+        except ConnectionResetError as e: #WinError 10054: An existing connection was forcibly closed by the remote host
+            return
         except (socket.timeout,TimeoutError): #timeout from recv; socket.timeout -> exceeded timeout_socket, TimeoutError -> exceeded ?system-wide timeout
             raise Exception("Should NOT happen") #Should be protected by 'select' function
         except Exception as e:
@@ -107,7 +111,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
             #TODO Consider Response 408 Request Timeout with header: close
 
 def main():
-                
+
     _CONFIG_FILENAME = 'authproxy.ini'
     config = configparser.ConfigParser()
     config.read(_CONFIG_FILENAME)
@@ -122,14 +126,14 @@ def main():
             config.write(f)
         print('No valid setting from authproxy.ini. Terminating.')
         return
-    
+
     ProxyHandler.setproxy(config['DEFAULT']['address'], config['DEFAULT']['port'])
     ProxyHandler.setuser(config['DEFAULT']['user'])
 
     #server = socketserver.TCPServer(("localhost",8080), ProxyHandler)
     server = socketserver.ThreadingTCPServer(("localhost",8080), ProxyHandler)
     server.serve_forever()
-                                
+
 
 if __name__ == '__main__':
     main()
@@ -151,7 +155,7 @@ if __name__ == '__main__':
 ##                print(len(R.recv(8192)))
 ##                time.sleep(10)
 ##                pass
-##    
+##
 ##    thread = Thread(target = serve_one)
 ##    thread.start()
 ##    try:
@@ -167,6 +171,6 @@ if __name__ == '__main__':
 ##    except socket.timeout:
 ##        print('socket timeout')
 ##        raise
-##    #thread.join()   
-##    
+##    #thread.join()
+##
 ##test()
