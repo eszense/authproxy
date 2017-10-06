@@ -1,10 +1,14 @@
+import functools
 import socketserver
 import socket
 import select
 import base64
 import getpass
 import configparser
+import logging
+import threading
 
+logger = logging.getLogger(__name__)
 #Ref:
 #https://tools.ietf.org/rfc/rfc7230.txt
 
@@ -14,18 +18,13 @@ class ProxyHandler(socketserver.BaseRequestHandler):
     #N.B. recv() also use timeout_socket, but it is protected by select()
     #N.B. Besides timeout_socket, a ?system-wide connection timeout is additionally in place
 
-
-    parentProxyAdr = ("127.0.0.1","8888")
-    authString = ''.encode()
-
-    @classmethod
-    def setuser(cls,user):
-        if user != '':
-            cls.authString = ('Proxy-Authorization: Basic %s\r\n' % base64.b64encode((user+":"+getpass.getpass()).encode()).decode('ascii')).encode()
-
-    @classmethod
-    def setproxy(cls,addr,port):
-        cls.parentProxyAdr = (addr,port)
+    def __init__(self, parent_addr, parent_port, parent_user, parent_pass, *args, **kwargs):
+        self.parentProxyAdr = (parent_addr, str(parent_port))
+        if parent_user != '':
+            self.authString = ('Proxy-Authorization: Basic %s\r\n' % base64.b64encode((parent_user+":"+parent_pass).encode()).decode('ascii')).encode()
+        else:
+            self.authString = ''.encode()
+        super().__init__(*args, **kwargs)
 
     def handle(self):
         L = self.request
@@ -110,8 +109,26 @@ class ProxyHandler(socketserver.BaseRequestHandler):
 
             #TODO Consider Response 408 Request Timeout with header: close
 
-def main():
+class AuthProxy():
+    def __init__(self, parent_addr, parent_port, parent_user, parent_pass):
+        # server = socketserver.TCPServer(("localhost",8080), ProxyHandler)
+        self.server = socketserver.ThreadingTCPServer(
+            ("localhost", 8000),
+            functools.partial(ProxyHandler, parent_addr, parent_port, parent_user, parent_pass))
+        server_thread = threading.Thread(target=self.server.serve_forever)
+        server_thread.daemon = True
+        server_thread.start()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+
+def main():
     _CONFIG_FILENAME = 'authproxy.ini'
     config = configparser.ConfigParser()
     config.read(_CONFIG_FILENAME)
@@ -127,13 +144,10 @@ def main():
         print('No valid setting from authproxy.ini. Terminating.')
         return
 
-    ProxyHandler.setproxy(config['DEFAULT']['address'], config['DEFAULT']['port'])
-    ProxyHandler.setuser(config['DEFAULT']['user'])
-
-    #server = socketserver.TCPServer(("localhost",8080), ProxyHandler)
-    server = socketserver.ThreadingTCPServer(("localhost",8080), ProxyHandler)
-    server.serve_forever()
-
+    with AuthProxy(config['DEFAULT']['address'],
+                   config['DEFAULT']['port'],
+                   config['DEFAULT']['user'], getpass.getpass()):
+        input()
 
 if __name__ == '__main__':
     main()
