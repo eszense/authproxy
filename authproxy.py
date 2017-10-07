@@ -113,7 +113,7 @@ class AuthProxy():
     def __init__(self, parent_addr, parent_port, parent_user, parent_pass):
         # server = socketserver.TCPServer(("localhost",8080), ProxyHandler)
         self.server = socketserver.ThreadingTCPServer(
-            ("localhost", 8000),
+            ("localhost", 8888),
             functools.partial(ProxyHandler, parent_addr, parent_port, parent_user, parent_pass))
         server_thread = threading.Thread(target=self.server.serve_forever)
         server_thread.daemon = True
